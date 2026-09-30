@@ -1,6 +1,8 @@
 package com.zuck.team;
 
 import com.zuck.agent.AgentDefinition;
+import com.zuck.llm.LlmClient;
+import com.zuck.llm.TeamDiscussion;
 import com.zuck.project.CurrentProjectContext;
 import com.zuck.project.Project;
 import com.zuck.work.WorkItem;
@@ -18,10 +20,15 @@ public class TeamCoordinator {
 
     private final EngineeringTeam engineeringTeam;
     private final CurrentProjectContext projectContext;
+    private final LlmClient llmClient;
 
-    public TeamCoordinator(EngineeringTeam engineeringTeam, CurrentProjectContext projectContext) {
+    public TeamCoordinator(
+            EngineeringTeam engineeringTeam,
+            CurrentProjectContext projectContext,
+            LlmClient llmClient) {
         this.engineeringTeam = engineeringTeam;
         this.projectContext = projectContext;
+        this.llmClient = llmClient;
     }
 
     public Project getCurrentProject() {
@@ -40,20 +47,19 @@ public class TeamCoordinator {
         return engineeringTeam.getMembers();
     }
 
+    /**
+     * Standard coordination: resolves participants and creates work item.
+     */
     public TeamCoordinationResult coordinate(String request) {
         if (request == null || request.isBlank()) {
             throw new IllegalArgumentException("request must not be blank");
         }
 
+        detectAndSwitchProjectIfMentioned(request);
+
         Project project = getCurrentProject();
         Set<String> roles = determineRelevantRoles(request);
-        List<AgentDefinition> participants = new ArrayList<>();
-
-        for (AgentDefinition agent : engineeringTeam.getMembers()) {
-            if (roles.contains(agent.role().name())) {
-                participants.add(agent);
-            }
-        }
+        List<AgentDefinition> participants = resolveParticipants(roles);
 
         WorkItem workItem = new WorkItem(
                 project.id(),
@@ -64,6 +70,43 @@ public class TeamCoordinator {
         return new TeamCoordinationResult(project, participants, workItem);
     }
 
+    /**
+     * Convenes the full virtual engineering team meeting:
+     * Decomposes the task, assigns specialists, and runs multi-agent dialogue.
+     */
+    public TeamDiscussion coordinateAndDiscuss(String request) {
+        TeamCoordinationResult coord = coordinate(request);
+        return llmClient.generateDiscussion(
+                coord.project(),
+                coord.participants(),
+                request.trim(),
+                coord.workItem());
+    }
+
+    private void detectAndSwitchProjectIfMentioned(String request) {
+        String lower = request.toLowerCase(Locale.ROOT);
+        for (Project p : projectContext.getAllProjects()) {
+            String pId = p.id().toLowerCase(Locale.ROOT);
+            String pName = p.name().toLowerCase(Locale.ROOT);
+            String normalizedId = pId.replace("-", " ");
+
+            if (lower.contains(pId) || lower.contains(pName) || lower.contains(normalizedId)) {
+                projectContext.setCurrentProject(p.id());
+                break;
+            }
+        }
+    }
+
+    private List<AgentDefinition> resolveParticipants(Set<String> roles) {
+        List<AgentDefinition> participants = new ArrayList<>();
+        for (AgentDefinition agent : engineeringTeam.getMembers()) {
+            if (roles.contains(agent.role().name())) {
+                participants.add(agent);
+            }
+        }
+        return participants;
+    }
+
     private Set<String> determineRelevantRoles(String request) {
         String text = request.toLowerCase(Locale.ROOT);
         Set<String> roles = new LinkedHashSet<>();
@@ -71,15 +114,15 @@ public class TeamCoordinator {
         // Team Lead (Zuck) always coordinates
         roles.add("TEAM_LEAD");
 
-        if (containsAny(text, "ui", "frontend", "web", "mobile", "screen", "react", "nextjs", "flutter", "css", "layout")) {
+        if (containsAny(text, "ui", "frontend", "web", "mobile", "screen", "react", "nextjs", "flutter", "css", "layout", "view", "table", "dashboard")) {
             roles.add("FRONTEND");
         }
 
-        if (containsAny(text, "api", "backend", "java", "spring", "database", "postgres", "sql", "endpoint", "rest", "service", "jpa")) {
+        if (containsAny(text, "api", "backend", "java", "spring", "database", "postgres", "sql", "endpoint", "rest", "service", "jpa", "leaderboard", "data", "query", "aggregation")) {
             roles.add("BACKEND");
         }
 
-        if (containsAny(text, "test", "bug", "qa", "regression", "acceptance", "verify", "criteria")) {
+        if (containsAny(text, "test", "bug", "qa", "regression", "acceptance", "verify", "criteria", "edge case")) {
             roles.add("QA");
         }
 
@@ -87,7 +130,7 @@ public class TeamCoordinator {
             roles.add("PLATFORM");
         }
 
-        if (containsAny(text, "feature", "user", "requirement", "behavior", "product", "leaderboard", "scope", "story")) {
+        if (containsAny(text, "feature", "user", "requirement", "behavior", "product", "leaderboard", "scope", "story", "points", "ranking")) {
             roles.add("PRODUCT");
         }
 

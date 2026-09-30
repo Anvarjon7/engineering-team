@@ -1,6 +1,8 @@
 package com.zuck.team;
 
 import com.zuck.agent.AgentRegistry;
+import com.zuck.llm.MockLlmClient;
+import com.zuck.llm.TeamDiscussion;
 import com.zuck.project.CurrentProjectContext;
 import com.zuck.project.Project;
 import com.zuck.project.ProjectRegistry;
@@ -41,7 +43,7 @@ class TeamCoordinatorTest {
         ProjectRegistry projectRegistry = new ProjectRegistry(properties);
         context = new CurrentProjectContext(projectRegistry, project1.id());
         EngineeringTeam team = new EngineeringTeam(new AgentRegistry());
-        coordinator = new TeamCoordinator(team, context);
+        coordinator = new TeamCoordinator(team, context, new MockLlmClient());
     }
 
     @Test
@@ -57,7 +59,7 @@ class TeamCoordinatorTest {
         assertTrue(participantIds.contains("backend"));
         assertTrue(participantIds.contains("qa"));
         assertTrue(participantIds.contains("product"));
-        assertFalse(participantIds.contains("frontend"));
+        assertFalse(participantIds.contains("platform"));
     }
 
     @Test
@@ -73,24 +75,37 @@ class TeamCoordinatorTest {
     }
 
     @Test
-    void coordinatesDevOpsPlatformTask() {
-        TeamCoordinationResult result = coordinator.coordinate(
-                "Configure Docker compose deployment pipeline with CI security checks");
+    void automaticallyDetectsProjectMentionedInTask() {
+        assertEquals("habit-coach-agent", coordinator.getCurrentProject().id());
 
-        List<String> participantIds = result.participants().stream().map(a -> a.id()).toList();
-        assertTrue(participantIds.contains("zuck"));
-        assertTrue(participantIds.contains("platform"));
+        // Mentions ai-academy in request
+        TeamCoordinationResult result = coordinator.coordinate(
+                "Zuck, let's create a leaderboard for ai-academy project with tests");
+
+        assertEquals("ai-academy", coordinator.getCurrentProject().id());
+        assertEquals("ai-academy", result.project().id());
     }
 
     @Test
-    void supportsSwitchingActiveProjectContext() {
-        assertEquals("habit-coach-agent", coordinator.getCurrentProject().id());
+    void coordinatesAndGeneratesMultiAgentDiscussion() {
+        TeamDiscussion discussion = coordinator.coordinateAndDiscuss(
+                "Zuck, let's create a leaderboard table and test cases illustrating the weekly performance of each participants in habit-coach project");
 
-        coordinator.switchProject("ai-academy");
-        assertEquals("ai-academy", coordinator.getCurrentProject().id());
+        assertEquals("habit-coach-agent", discussion.project().id());
+        assertFalse(discussion.statements().isEmpty());
 
-        TeamCoordinationResult result = coordinator.coordinate("Implement Next.js frontend UI");
-        assertEquals("ai-academy", result.project().id());
+        List<String> speakingAgents = discussion.statements().stream()
+                .map(s -> s.agentId())
+                .toList();
+
+        assertTrue(speakingAgents.contains("zuck"));
+        assertTrue(speakingAgents.contains("backend"));
+        assertTrue(speakingAgents.contains("qa"));
+
+        String formatted = discussion.toFormattedTelegramMessage();
+        assertTrue(formatted.contains("Zuck"));
+        assertTrue(formatted.contains("Mr.500"));
+        assertTrue(formatted.contains("Sherlock"));
     }
 
     @Test
