@@ -4,8 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zuck.agent.AgentDefinition;
+import com.zuck.llm.LlmClient;
+import com.zuck.llm.TeamDiscussion;
 import com.zuck.project.Project;
-import com.zuck.team.TeamCoordinationResult;
 import com.zuck.team.TeamCoordinator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,6 +18,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.List;
 
 @Service
@@ -27,6 +29,7 @@ public class TelegramTeamLeadService {
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
     private final TeamCoordinator coordinator;
+    private final LlmClient llmClient;
     private final String token;
     private final long allowedUserId;
     private final long allowedChatId;
@@ -38,14 +41,18 @@ public class TelegramTeamLeadService {
     public TelegramTeamLeadService(
             ObjectMapper objectMapper,
             TeamCoordinator coordinator,
+            LlmClient llmClient,
             @Value("${telegram.bot.token:}") String token,
             @Value("${telegram.bot.allowed-user-id:0}") long allowedUserId,
             @Value("${telegram.bot.allowed-chat-id:0}") long allowedChatId,
             @Value("${telegram.bot.enabled:true}") boolean enabled,
-            @Value("${telegram.bot.natural-language:false}") boolean naturalLanguageEnabled) {
+            @Value("${telegram.bot.natural-language:true}") boolean naturalLanguageEnabled) {
         this.objectMapper = objectMapper;
-        this.httpClient = HttpClient.newHttpClient();
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(15))
+                .build();
         this.coordinator = coordinator;
+        this.llmClient = llmClient;
         this.token = token;
         this.allowedUserId = allowedUserId;
         this.allowedChatId = allowedChatId;
@@ -86,26 +93,38 @@ public class TelegramTeamLeadService {
 
     public void handleUpdate(JsonNode update) throws Exception {
         JsonNode message = update.path("message");
-        if (message.isMissingNode() || !message.has("text")) {
+        if (message.isMissingNode()) {
             return;
         }
 
         long chatId = message.path("chat").path("id").asLong();
         long userId = message.path("from").path("id").asLong();
-        String text = message.path("text").asText().trim();
 
         if (allowedChatId != 0 && allowedChatId != chatId) {
-            return;
-        }
-
-        if (text.equals("/whoami")) {
-            sendMessage(chatId, "Your Telegram user ID is: " + userId + "\nChat ID is: " + chatId);
             return;
         }
 
         if (allowedUserId != 0 && allowedUserId != userId) {
             sendMessage(chatId, "I received your message, but Zuck is not configured for your user ID yet. "
                     + "Send /whoami, then set TELEGRAM_ALLOWED_USER_ID=" + userId);
+            return;
+        }
+
+        // 1. Handle Spoken Voice or Audio Note
+        if (message.has("voice") || message.has("audio")) {
+            handleVoiceOrAudioMessage(chatId, message);
+            return;
+        }
+
+        // 2. Handle Text Messages
+        if (!message.has("text")) {
+            return;
+        }
+
+        String text = message.path("text").asText().trim();
+
+        if (text.equals("/whoami")) {
+            sendMessage(chatId, "Your Telegram user ID is: " + userId + "\nChat ID is: " + chatId);
             return;
         }
 
@@ -136,29 +155,99 @@ public class TelegramTeamLeadService {
         }
 
         if (text.startsWith("/task ")) {
-            coordinateTask(chatId, text.substring(6).trim());
+            coordinateAndDiscuss(chatId, text.substring(6).trim());
             return;
         }
 
-        if (naturalLanguageEnabled && !text.startsWith("/")) {
-            coordinateTask(chatId, text);
+        // In group/channel: trigger if addressed to Zuck or natural language is enabled
+        String lower = text.toLowerCase();
+        if (lower.startsWith("zuck") || lower.startsWith("@zuck") || (naturalLanguageEnabled && !text.startsWith("/"))) {
+            String cleanedRequest = text.replaceFirst("(?i)^(zuck|@zuck)[:,\\s]*", "").trim();
+            if (!cleanedRequest.isBlank()) {
+                coordinateAndDiscuss(chatId, cleanedRequest);
+            }
         }
+    }
+
+    private void handleVoiceOrAudioMessage(long chatId, JsonNode message) throws Exception {
+        JsonNode audioNode = message.has("voice") ? message.path("voice") : message.path("audio");
+        String fileId = audioNode.path("file_id").asText();
+        String mimeType = audioNode.path("mime_type").asText("audio/ogg");
+
+        if (fileId.isBlank()) {
+            sendMessage(chatId, "Could not extract voice recording file from Telegram.");
+            return;
+        }
+
+        sendMessage(chatId, "🎙️ Receiving audio note... Transcribing spoken request...");
+
+        byte[] audioBytes = downloadTelegramFile(fileId);
+        if (audioBytes == null || audioBytes.length == 0) {
+            sendMessage(chatId, "❌ Failed to download audio file from Telegram.");
+            return;
+        }
+
+        String transcription = llmClient.transcribeAudio(audioBytes, mimeType);
+        if (transcription.isBlank() || transcription.startsWith("Audio transcription failed")) {
+            sendMessage(chatId, "⚠️ " + transcription);
+            return;
+        }
+
+        sendMessage(chatId, "🗣️ Transcribed Request:\n\"" + transcription + "\"");
+        coordinateAndDiscuss(chatId, transcription);
+    }
+
+    private byte[] downloadTelegramFile(String fileId) {
+        try {
+            String getFileUrl = "https://api.telegram.org/bot" + token + "/getFile?file_id=" + fileId;
+            HttpRequest getFileReq = HttpRequest.newBuilder(URI.create(getFileUrl)).GET().build();
+            HttpResponse<String> getFileResp = httpClient.send(getFileReq, HttpResponse.BodyHandlers.ofString());
+
+            JsonNode root = objectMapper.readTree(getFileResp.body());
+            if (!root.path("ok").asBoolean(false)) {
+                log.warn("Failed to getFile from Telegram: {}", root);
+                return null;
+            }
+
+            String filePath = root.path("result").path("file_path").asText();
+            String downloadUrl = "https://api.telegram.org/file/bot" + token + "/" + filePath;
+
+            HttpRequest downloadReq = HttpRequest.newBuilder(URI.create(downloadUrl)).GET().build();
+            HttpResponse<byte[]> downloadResp = httpClient.send(downloadReq, HttpResponse.BodyHandlers.ofByteArray());
+
+            return downloadResp.body();
+        } catch (Exception e) {
+            log.error("Failed to download Telegram voice file", e);
+            return null;
+        }
+    }
+
+    private void coordinateAndDiscuss(long chatId, String task) throws Exception {
+        if (task.isBlank()) {
+            sendMessage(chatId, "Please describe the engineering work after /task or speak your request.");
+            return;
+        }
+
+        TeamDiscussion discussion = coordinator.coordinateAndDiscuss(task);
+        sendMessage(chatId, discussion.toFormattedTelegramMessage());
     }
 
     private void sendHelp(long chatId) throws Exception {
         sendMessage(chatId, """
                 🤖 Zuck — AI Software Engineering Team Platform is online.
 
-                Available Commands:
-                /task <description> — bring engineering work to the team
-                /team — view all 8 members of the engineering team
-                /project — show currently active project context
-                /projects — list all registered projects
-                /switch <id> — switch active project context
-                /whoami — show your Telegram user/chat IDs
-                /help — show this message
+                Available Commands & Features:
+                • Send Voice/Audio recording — Zuck transcribes your voice and convenes the team meeting!
+                • Text "Zuck, let's build..." — Zuck automatically calls relevant engineers to discuss
+                • /task <description> — bring engineering work to the team
+                • /team — view all 8 members of the engineering team
+                • /project — show currently active project context
+                • /projects — list all registered projects
+                • /switch <id> — switch active project context
+                • /whoami — show your Telegram user/chat IDs
+                • /help — show this message
 
-                The team persists across projects. Switch target projects at any time.
+                The team persists across projects. Mention the project name (e.g. "in habit-coach project") and Zuck will adapt automatically!
                 """);
     }
 
@@ -204,29 +293,6 @@ public class TelegramTeamLeadService {
         } catch (IllegalArgumentException e) {
             sendMessage(chatId, "❌ " + e.getMessage() + ". Use /projects to view available IDs.");
         }
-    }
-
-    private void coordinateTask(long chatId, String task) throws Exception {
-        if (task.isBlank()) {
-            sendMessage(chatId, "Please describe the engineering work after /task.");
-            return;
-        }
-
-        TeamCoordinationResult result = coordinator.coordinate(task);
-        StringBuilder message = new StringBuilder()
-                .append("📋 Team Lead (Zuck) received the request.\n\n")
-                .append("Active Project: ").append(result.project().name()).append("\n")
-                .append("Work status: ").append(result.workItem().status()).append("\n")
-                .append("Relevant Participants: ");
-
-        for (int i = 0; i < result.participants().size(); i++) {
-            AgentDefinition agent = result.participants().get(i);
-            if (i > 0) message.append(", ");
-            message.append(agent.name());
-        }
-
-        message.append("\n\nNo code has been changed yet.");
-        sendMessage(chatId, message.toString());
     }
 
     private void sendMessage(long chatId, String text) throws Exception {
