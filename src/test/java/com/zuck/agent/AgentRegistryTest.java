@@ -34,7 +34,7 @@ class AgentRegistryTest {
         assertEquals(AgentRole.TEAM_LEAD, zuck.role());
 
         AgentDefinition backend = registry.getAgent("backend");
-        assertEquals("Mr.500", backend.name());
+        assertEquals("Mr. 500", backend.name());
         assertEquals(AgentRole.BACKEND, backend.role());
         assertTrue(backend.capabilities().contains("java"));
         assertTrue(backend.capabilities().contains("postgresql"));
@@ -64,6 +64,17 @@ class AgentRegistryTest {
         AgentDefinition ilon = registry.getAgent("ilon");
         assertEquals("Ilon", ilon.name());
         assertEquals(AgentRole.REVIEWER, ilon.role());
+    }
+
+    @Test
+    void findsAgentByNameOrRoleOrFuzzy() {
+        assertTrue(registry.findAgent("backend").isPresent());
+        assertTrue(registry.findAgent("Mr. 500").isPresent());
+        assertTrue(registry.findAgent("mr500").isPresent());
+        assertTrue(registry.findAgent("Sherlock").isPresent());
+        assertTrue(registry.findAgent("QA").isPresent());
+        assertTrue(registry.findAgent("Mr. 500 (Backend Engineer)").isPresent());
+        assertTrue(registry.findAgent("unknown").isEmpty());
     }
 
     @Test

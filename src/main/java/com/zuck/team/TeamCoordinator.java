@@ -118,11 +118,11 @@ public class TeamCoordinator {
             roles.add("FRONTEND");
         }
 
-        if (containsAny(text, "api", "backend", "java", "spring", "database", "postgres", "sql", "endpoint", "rest", "service", "jpa", "leaderboard", "data", "query", "aggregation")) {
+        if (containsAny(text, "api", "backend", "java", "spring", "database", "postgres", "sql", "endpoint", "rest", "service", "jpa", "leaderboard", "data", "query", "aggregation", "streak", "counter", "check-in", "check in", "entity", "logic", "calculate", "store", "save", "fetch", "model", "crud", "controller", "repository", "migration", "table", "schema", "record", "track")) {
             roles.add("BACKEND");
         }
 
-        if (containsAny(text, "test", "bug", "qa", "regression", "acceptance", "verify", "criteria", "edge case")) {
+        if (containsAny(text, "test", "bug", "qa", "regression", "acceptance", "verify", "criteria", "edge case", "validate", "check", "coverage", "case", "scenario")) {
             roles.add("QA");
         }
 
@@ -130,12 +130,19 @@ public class TeamCoordinator {
             roles.add("PLATFORM");
         }
 
-        if (containsAny(text, "feature", "user", "requirement", "behavior", "product", "leaderboard", "scope", "story", "points", "ranking")) {
+        if (containsAny(text, "feature", "user", "requirement", "behavior", "product", "leaderboard", "scope", "story", "points", "ranking", "streak", "habit", "goal", "coach", "rule", "metric", "flow", "journey")) {
             roles.add("PRODUCT");
         }
 
         if (containsAny(text, "research", "compare", "library", "documentation", "alternative", "investigate", "explore")) {
             roles.add("RESEARCH");
+        }
+
+        // If no specialists were matched, default to core team (Backend, QA, Product)
+        if (roles.size() == 1) {
+            roles.add("BACKEND");
+            roles.add("QA");
+            roles.add("PRODUCT");
         }
 
         return roles;

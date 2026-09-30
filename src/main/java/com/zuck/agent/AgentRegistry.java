@@ -5,7 +5,9 @@ import org.springframework.stereotype.Component;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 @Component
@@ -25,6 +27,50 @@ public class AgentRegistry {
         return agent;
     }
 
+    public Optional<AgentDefinition> findAgent(String identifier) {
+        if (identifier == null || identifier.isBlank()) {
+            return Optional.empty();
+        }
+        String clean = identifier.trim().toLowerCase(Locale.ROOT);
+        AgentDefinition exact = agents.get(clean);
+        if (exact != null) {
+            return Optional.of(exact);
+        }
+
+        // Match by agent name (e.g. "Mr. 500", "Sherlock", "Zuck", "Pixel", "Atlas", "Mira", "X", "Ilon")
+        for (AgentDefinition agent : agents.values()) {
+            if (agent.name().equalsIgnoreCase(clean)) {
+                return Optional.of(agent);
+            }
+        }
+
+        // Match by role name
+        for (AgentDefinition agent : agents.values()) {
+            if (agent.role().name().equalsIgnoreCase(clean)) {
+                return Optional.of(agent);
+            }
+        }
+
+        // Match alphanumeric stripped (e.g. "mr500" -> "Mr. 500", "teamlead" -> "team_lead")
+        String alphaNumeric = clean.replaceAll("[^a-z0-9]", "");
+        for (AgentDefinition agent : agents.values()) {
+            String agentAlpha = agent.name().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+            String roleAlpha = agent.role().name().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+            if (alphaNumeric.equals(agentAlpha) || alphaNumeric.equals(roleAlpha) || alphaNumeric.equals(agent.id())) {
+                return Optional.of(agent);
+            }
+        }
+
+        // Contains check (e.g. "Mr. 500 (Backend Engineer)", "Sherlock (QA)")
+        for (AgentDefinition agent : agents.values()) {
+            if (clean.contains(agent.id()) || clean.contains(agent.name().toLowerCase(Locale.ROOT))) {
+                return Optional.of(agent);
+            }
+        }
+
+        return Optional.empty();
+    }
+
     public List<AgentDefinition> getAllAgents() {
         return List.copyOf(agents.values());
     }
@@ -38,7 +84,7 @@ public class AgentRegistry {
                 Set.of("planning", "task-decomposition", "coordination", "status", "orchestration")));
 
         register(definitions, new AgentDefinition(
-                "backend", "Mr.500", AgentRole.BACKEND,
+                "backend", "Mr. 500", AgentRole.BACKEND,
                 "Owns backend services, APIs, domain logic, databases, performance, and backend tests.",
                 Set.of("java", "spring-boot", "postgresql", "rest-api", "backend-tests", "sql")));
 
