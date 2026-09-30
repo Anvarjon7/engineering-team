@@ -123,6 +123,11 @@ public class TelegramTeamLeadService {
 
         String text = message.path("text").asText().trim();
 
+        // Strip surrounding quotes if user copied/pasted with quotes
+        if ((text.startsWith("\"") && text.endsWith("\"")) || (text.startsWith("'") && text.endsWith("'"))) {
+            text = text.substring(1, text.length() - 1).trim();
+        }
+
         if (text.equals("/whoami")) {
             sendMessage(chatId, "Your Telegram user ID is: " + userId + "\nChat ID is: " + chatId);
             return;
@@ -159,8 +164,15 @@ public class TelegramTeamLeadService {
             return;
         }
 
-        // In group/channel: trigger if addressed to Zuck or natural language is enabled
+        // Direct greeting/call
         String lower = text.toLowerCase();
+        if (lower.equals("zuck") || lower.equals("@zuck") || lower.equals("hey zuck") || lower.equals("hi zuck")) {
+            sendMessage(chatId, "🤖 Team Lead (Zuck) online! What engineering work should we tackle for " 
+                    + coordinator.getCurrentProject().name() + "? Send a voice note or message with your task.");
+            return;
+        }
+
+        // In group/channel: trigger if addressed to Zuck or natural language is enabled
         if (lower.startsWith("zuck") || lower.startsWith("@zuck") || (naturalLanguageEnabled && !text.startsWith("/"))) {
             String cleanedRequest = text.replaceFirst("(?i)^(zuck|@zuck)[:,\\s]*", "").trim();
             if (!cleanedRequest.isBlank()) {
