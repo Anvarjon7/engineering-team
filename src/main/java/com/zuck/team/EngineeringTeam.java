@@ -5,6 +5,7 @@ import com.zuck.agent.AgentRegistry;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Optional;
 
 @Component
 public class EngineeringTeam {
@@ -21,5 +22,9 @@ public class EngineeringTeam {
 
     public AgentDefinition getMember(String agentId) {
         return agentRegistry.getAgent(agentId);
+    }
+
+    public Optional<AgentDefinition> findMember(String identifier) {
+        return agentRegistry.findAgent(identifier);
     }
 }

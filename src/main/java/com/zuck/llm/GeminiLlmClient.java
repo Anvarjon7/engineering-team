@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zuck.agent.AgentDefinition;
+import com.zuck.agent.AgentRegistry;
 import com.zuck.project.Project;
 import com.zuck.work.WorkItem;
 import org.slf4j.Logger;
@@ -20,7 +21,9 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 @Component
@@ -29,15 +32,18 @@ public class GeminiLlmClient implements LlmClient {
     private static final Logger log = LoggerFactory.getLogger(GeminiLlmClient.class);
 
     private final ObjectMapper objectMapper;
+    private final AgentRegistry agentRegistry;
     private final HttpClient httpClient;
     private final String apiKey;
     private final String model;
 
     public GeminiLlmClient(
             ObjectMapper objectMapper,
+            AgentRegistry agentRegistry,
             @Value("${gemini.api-key:${GEMINI_API_KEY:}}") String apiKey,
             @Value("${gemini.model:gemini-2.5-flash}") String model) {
         this.objectMapper = objectMapper;
+        this.agentRegistry = agentRegistry;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(15))
                 .build();
@@ -73,8 +79,8 @@ public class GeminiLlmClient implements LlmClient {
             String responseBody = sendGeminiRequest(root);
             return extractTextFromResponse(responseBody);
         } catch (Exception e) {
-            log.error("Failed to generate text with Gemini model: {}", model, e);
-            return "Error calling AI model: " + e.getMessage();
+            log.error("Failed to generate text from Gemini API", e);
+            return "Gemini API call failed: " + e.getMessage();
         }
     }
 
@@ -138,15 +144,33 @@ public class GeminiLlmClient implements LlmClient {
                       "summary": "Concise 3-7 word summary of the task topic",
                       "statements": [
                         {
-                          "agentId": "<agent id from the participants list>",
+                          "agentId": "<exact agent ID from the participants list, e.g. 'zuck', 'backend', 'frontend', 'qa', 'platform', 'product', 'research', 'ilon'>",
                           "message": "<what this engineer says>"
                         }
                       ]
                     }
-                    Do not enclose in markdown ticks if possible, or use ```json ... ```.
+                    CRITICAL INSTRUCTION:
+                    - In 'statements', the 'agentId' MUST correspond to the agent speaking (e.g. 'product' for Mira, 'backend' for Mr. 500, 'qa' for Sherlock).
+                    - DO NOT assign all statements to 'zuck'.
                     """, project.name(), userRequest);
 
-            String responseText = generateText(systemPrompt, prompt);
+            ObjectNode root = objectMapper.createObjectNode();
+
+            ObjectNode sysInstruction = root.putObject("system_instruction");
+            ArrayNode sysParts = sysInstruction.putArray("parts");
+            sysParts.addObject().put("text", systemPrompt);
+
+            ArrayNode contents = root.putArray("contents");
+            ObjectNode userContent = contents.addObject();
+            userContent.put("role", "user");
+            ArrayNode userParts = userContent.putArray("parts");
+            userParts.addObject().put("text", prompt);
+
+            ObjectNode genConfig = root.putObject("generationConfig");
+            genConfig.put("responseMimeType", "application/json");
+
+            String responseBody = sendGeminiRequest(root);
+            String responseText = extractTextFromResponse(responseBody);
             return parseDiscussionJson(responseText, project, workItem, participantMap);
         } catch (Exception e) {
             log.error("Failed to generate dynamic team discussion via LLM, using fallback", e);
@@ -158,6 +182,7 @@ public class GeminiLlmClient implements LlmClient {
         StringBuilder sb = new StringBuilder();
         sb.append("You are the AI Software Engineering Team platform named 'Zuck'.\n");
         sb.append("You simulate a real, elite virtual software engineering team collaborating on client software projects.\n\n");
+
         sb.append("CURRENT PROJECT CONTEXT:\n");
         sb.append("• Project ID: ").append(project.id()).append("\n");
         sb.append("• Name: ").append(project.name()).append("\n");
@@ -175,7 +200,7 @@ public class GeminiLlmClient implements LlmClient {
 
         sb.append("\nGUIDELINES FOR THE DISCUSSION:\n");
         sb.append("1. Zuck (Team Lead) speaks first: acknowledges Anwar's request, summarizes the goal, and directs questions to specialists.\n");
-        sb.append("2. Participating specialists (e.g. Mr. 500 for backend, Pixel for frontend, Mira for product, Sherlock for QA) answer with concrete, technical proposals (mentioning real APIs, schemas, edge cases, or architectures matching the project's tech stack).\n");
+        sb.append("2. Participating specialists (e.g. Mr. 500 for backend, Pixel for frontend, Mira for product, Sherlock for QA) answer with concrete, technical proposals (mentioning real APIs, schemas, edge cases, user stories, or architectures matching the project's tech stack).\n");
         sb.append("3. Zuck wraps up the discussion with next steps.\n");
         sb.append("4. Tone: Collaborative, practical, intelligent, and focused on quality.\n");
         return sb.toString();
@@ -187,37 +212,29 @@ public class GeminiLlmClient implements LlmClient {
             WorkItem workItem,
             Map<String, AgentDefinition> participantMap) throws Exception {
 
-        String cleaned = rawJson.trim();
-        if (cleaned.startsWith("```json")) {
-            cleaned = cleaned.substring(7);
-        } else if (cleaned.startsWith("```")) {
-            cleaned = cleaned.substring(3);
-        }
-        if (cleaned.endsWith("```")) {
-            cleaned = cleaned.substring(0, cleaned.length() - 3);
-        }
-        cleaned = cleaned.trim();
-
+        String cleaned = extractJson(rawJson);
         JsonNode root = objectMapper.readTree(cleaned);
         String summary = root.path("summary").asText(workItem.description());
         List<AgentStatement> statements = new ArrayList<>();
 
         for (JsonNode stmtNode : root.path("statements")) {
-            String agentId = stmtNode.path("agentId").asText().toLowerCase();
-            String message = stmtNode.path("message").asText();
+            String agentIdStr = stmtNode.has("agentId") ? stmtNode.path("agentId").asText()
+                    : stmtNode.has("agent_id") ? stmtNode.path("agent_id").asText()
+                    : stmtNode.has("speaker") ? stmtNode.path("speaker").asText()
+                    : stmtNode.has("name") ? stmtNode.path("name").asText()
+                    : stmtNode.has("role") ? stmtNode.path("role").asText()
+                    : "";
+            String message = stmtNode.has("message") ? stmtNode.path("message").asText()
+                    : stmtNode.has("text") ? stmtNode.path("text").asText()
+                    : stmtNode.has("statement") ? stmtNode.path("statement").asText()
+                    : "";
 
-            AgentDefinition agent = participantMap.get(agentId);
-            if (agent == null) {
-                // fallback to finding by name or pick first
-                agent = participantMap.values().stream()
-                        .filter(a -> a.name().equalsIgnoreCase(agentId))
-                        .findFirst()
-                        .orElse(participantMap.get("zuck"));
+            if (message.isBlank()) {
+                continue;
             }
 
-            if (agent != null && !message.isBlank()) {
-                statements.add(new AgentStatement(agent.id(), agent.name(), agent.role(), message));
-            }
+            AgentDefinition agent = resolveAgent(agentIdStr, participantMap);
+            statements.add(new AgentStatement(agent.id(), agent.name(), agent.role(), message));
         }
 
         if (statements.isEmpty()) {
@@ -225,6 +242,58 @@ public class GeminiLlmClient implements LlmClient {
         }
 
         return new TeamDiscussion(project, workItem, summary, statements);
+    }
+
+    private String extractJson(String text) {
+        if (text == null) {
+            return "{}";
+        }
+        String cleaned = text.trim();
+        int codeBlockStart = cleaned.indexOf("```json");
+        if (codeBlockStart != -1) {
+            int contentStart = codeBlockStart + 7;
+            int codeBlockEnd = cleaned.indexOf("```", contentStart);
+            if (codeBlockEnd != -1) {
+                return cleaned.substring(contentStart, codeBlockEnd).trim();
+            }
+        }
+        codeBlockStart = cleaned.indexOf("```");
+        if (codeBlockStart != -1) {
+            int contentStart = codeBlockStart + 3;
+            int codeBlockEnd = cleaned.indexOf("```", contentStart);
+            if (codeBlockEnd != -1) {
+                return cleaned.substring(contentStart, codeBlockEnd).trim();
+            }
+        }
+        int firstBrace = cleaned.indexOf('{');
+        int lastBrace = cleaned.lastIndexOf('}');
+        if (firstBrace != -1 && lastBrace != -1 && lastBrace > firstBrace) {
+            return cleaned.substring(firstBrace, lastBrace + 1).trim();
+        }
+        return cleaned;
+    }
+
+    private AgentDefinition resolveAgent(String identifier, Map<String, AgentDefinition> participantMap) {
+        if (identifier != null && !identifier.isBlank()) {
+            String clean = identifier.trim().toLowerCase(Locale.ROOT);
+            AgentDefinition fromParticipants = participantMap.get(clean);
+            if (fromParticipants != null) {
+                return fromParticipants;
+            }
+
+            for (AgentDefinition p : participantMap.values()) {
+                if (p.name().equalsIgnoreCase(clean) || p.role().name().equalsIgnoreCase(clean)) {
+                    return p;
+                }
+            }
+
+            Optional<AgentDefinition> found = agentRegistry.findAgent(identifier);
+            if (found.isPresent()) {
+                return found.get();
+            }
+        }
+
+        return participantMap.getOrDefault("zuck", agentRegistry.getAgent("zuck"));
     }
 
     private TeamDiscussion fallbackDiscussion(

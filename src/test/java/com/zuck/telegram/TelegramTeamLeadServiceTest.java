@@ -102,4 +102,43 @@ class TelegramTeamLeadServiceTest {
 
         assertDoesNotThrow(() -> service.handleUpdate(update));
     }
+
+    @Test
+    void handlesQuotedNaturalLanguageAndGreetings() throws Exception {
+        TelegramTeamLeadService service = new TelegramTeamLeadService(
+                objectMapper,
+                coordinator,
+                mockLlmClient,
+                "",
+                123L,
+                456L,
+                true,
+                true);
+
+        JsonNode greetingUpdate = objectMapper.readTree("""
+                {
+                  "update_id": 4,
+                  "message": {
+                    "chat": {"id": 456},
+                    "from": {"id": 123},
+                    "text": "ZUCK"
+                  }
+                }
+                """);
+
+        assertDoesNotThrow(() -> service.handleUpdate(greetingUpdate));
+
+        JsonNode quotedUpdate = objectMapper.readTree("""
+                {
+                  "update_id": 5,
+                  "message": {
+                    "chat": {"id": 456},
+                    "from": {"id": 123},
+                    "text": "\\"Zuck, let's create a leaderboard table which illustrates the weekly performance of each participant in habit-coach project\\""
+                  }
+                }
+                """);
+
+        assertDoesNotThrow(() -> service.handleUpdate(quotedUpdate));
+    }
 }

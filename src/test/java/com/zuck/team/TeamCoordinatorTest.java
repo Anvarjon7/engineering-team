@@ -63,6 +63,19 @@ class TeamCoordinatorTest {
     }
 
     @Test
+    void coordinatesStreakCounterTask() {
+        TeamCoordinationResult result = coordinator.coordinate(
+                "Zuck, let's add a streak counter to track consecutive check-ins for each habit in habit-coach project");
+
+        assertEquals(project1.id(), result.project().id());
+        List<String> participantIds = result.participants().stream().map(a -> a.id()).toList();
+        assertTrue(participantIds.contains("zuck"));
+        assertTrue(participantIds.contains("backend"));
+        assertTrue(participantIds.contains("qa"));
+        assertTrue(participantIds.contains("product"));
+    }
+
+    @Test
     void coordinatesFrontendAndProductTask() {
         TeamCoordinationResult result = coordinator.coordinate(
                 "Create a React web dashboard screen for user habit streaks");
@@ -104,7 +117,7 @@ class TeamCoordinatorTest {
 
         String formatted = discussion.toFormattedTelegramMessage();
         assertTrue(formatted.contains("Zuck"));
-        assertTrue(formatted.contains("Mr.500"));
+        assertTrue(formatted.contains("Mr. 500"));
         assertTrue(formatted.contains("Sherlock"));
     }
 
