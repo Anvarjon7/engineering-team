@@ -150,12 +150,27 @@ public class GeminiLlmClient implements LlmClient {
                       ]
                     }
                     CRITICAL INSTRUCTION:
-                    - In 'statements', the 'agentId' MUST correspond to the agent speaking (e.g. 'backend' for Mr. 500, 'qa' for Sherlock).
+                    - In 'statements', the 'agentId' MUST correspond to the agent speaking (e.g. 'product' for Mira, 'backend' for Mr. 500, 'qa' for Sherlock).
                     - DO NOT assign all statements to 'zuck'.
-                    Do not enclose in markdown ticks if possible, or use ```json ... ```.
                     """, project.name(), userRequest);
 
-            String responseText = generateText(systemPrompt, prompt);
+            ObjectNode root = objectMapper.createObjectNode();
+
+            ObjectNode sysInstruction = root.putObject("system_instruction");
+            ArrayNode sysParts = sysInstruction.putArray("parts");
+            sysParts.addObject().put("text", systemPrompt);
+
+            ArrayNode contents = root.putArray("contents");
+            ObjectNode userContent = contents.addObject();
+            userContent.put("role", "user");
+            ArrayNode userParts = userContent.putArray("parts");
+            userParts.addObject().put("text", prompt);
+
+            ObjectNode genConfig = root.putObject("generationConfig");
+            genConfig.put("responseMimeType", "application/json");
+
+            String responseBody = sendGeminiRequest(root);
+            String responseText = extractTextFromResponse(responseBody);
             return parseDiscussionJson(responseText, project, workItem, participantMap);
         } catch (Exception e) {
             log.error("Failed to generate dynamic team discussion via LLM, using fallback", e);
@@ -185,7 +200,7 @@ public class GeminiLlmClient implements LlmClient {
 
         sb.append("\nGUIDELINES FOR THE DISCUSSION:\n");
         sb.append("1. Zuck (Team Lead) speaks first: acknowledges Anwar's request, summarizes the goal, and directs questions to specialists.\n");
-        sb.append("2. Participating specialists (e.g. Mr. 500 for backend, Pixel for frontend, Mira for product, Sherlock for QA) answer with concrete, technical proposals (mentioning real APIs, schemas, edge cases, or architectures matching the project's tech stack).\n");
+        sb.append("2. Participating specialists (e.g. Mr. 500 for backend, Pixel for frontend, Mira for product, Sherlock for QA) answer with concrete, technical proposals (mentioning real APIs, schemas, edge cases, user stories, or architectures matching the project's tech stack).\n");
         sb.append("3. Zuck wraps up the discussion with next steps.\n");
         sb.append("4. Tone: Collaborative, practical, intelligent, and focused on quality.\n");
         return sb.toString();
@@ -197,17 +212,7 @@ public class GeminiLlmClient implements LlmClient {
             WorkItem workItem,
             Map<String, AgentDefinition> participantMap) throws Exception {
 
-        String cleaned = rawJson.trim();
-        if (cleaned.startsWith("```json")) {
-            cleaned = cleaned.substring(7);
-        } else if (cleaned.startsWith("```")) {
-            cleaned = cleaned.substring(3);
-        }
-        if (cleaned.endsWith("```")) {
-            cleaned = cleaned.substring(0, cleaned.length() - 3);
-        }
-        cleaned = cleaned.trim();
-
+        String cleaned = extractJson(rawJson);
         JsonNode root = objectMapper.readTree(cleaned);
         String summary = root.path("summary").asText(workItem.description());
         List<AgentStatement> statements = new ArrayList<>();
@@ -237,6 +242,35 @@ public class GeminiLlmClient implements LlmClient {
         }
 
         return new TeamDiscussion(project, workItem, summary, statements);
+    }
+
+    private String extractJson(String text) {
+        if (text == null) {
+            return "{}";
+        }
+        String cleaned = text.trim();
+        int codeBlockStart = cleaned.indexOf("```json");
+        if (codeBlockStart != -1) {
+            int contentStart = codeBlockStart + 7;
+            int codeBlockEnd = cleaned.indexOf("```", contentStart);
+            if (codeBlockEnd != -1) {
+                return cleaned.substring(contentStart, codeBlockEnd).trim();
+            }
+        }
+        codeBlockStart = cleaned.indexOf("```");
+        if (codeBlockStart != -1) {
+            int contentStart = codeBlockStart + 3;
+            int codeBlockEnd = cleaned.indexOf("```", contentStart);
+            if (codeBlockEnd != -1) {
+                return cleaned.substring(contentStart, codeBlockEnd).trim();
+            }
+        }
+        int firstBrace = cleaned.indexOf('{');
+        int lastBrace = cleaned.lastIndexOf('}');
+        if (firstBrace != -1 && lastBrace != -1 && lastBrace > firstBrace) {
+            return cleaned.substring(firstBrace, lastBrace + 1).trim();
+        }
+        return cleaned;
     }
 
     private AgentDefinition resolveAgent(String identifier, Map<String, AgentDefinition> participantMap) {
